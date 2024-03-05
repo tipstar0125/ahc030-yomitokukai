@@ -121,16 +121,16 @@ fn climbing(input: &Input, pool: &[Board], rng: &mut rand_pcg::Pcg64Mcg) -> Vec<
     // 初期値は全てのマスを占うとして山登りをスタート
     let mut fortune_map = DynamicMap2d::new(vec![true; input.n2], input.n);
     let mut best_score = 0.0;
-    let mut k = input.n2 as i16;
+    let mut k = input.n2;
 
     // 各候補盤面の占いマスにおける油田数を事前計算
-    let mut cnt = vec![0_i16; pool.len()];
-    for (c, b) in cnt.iter_mut().zip(pool) {
+    let mut cnt = vec![0; pool.len()];
+    for (c, board) in cnt.iter_mut().zip(pool) {
         for i in 0..input.n {
             for j in 0..input.n {
                 let coord = Coord::new(i, j);
                 if fortune_map[coord] {
-                    *c += b.oil_cnt[coord] as i16;
+                    *c += board.oil_cnt[coord] as usize;
                 }
             }
         }
@@ -142,23 +142,23 @@ fn climbing(input: &Input, pool: &[Board], rng: &mut rand_pcg::Pcg64Mcg) -> Vec<
         let coord = Coord::new(i, j);
 
         // 既に占いマスなら削除(-1)、占いマスでなければ追加(+1)
-        let delta = if fortune_map[coord] { -1 } else { 1 };
+        let delta = if fortune_map[coord] { !0 } else { 1 };
         fortune_map[coord] = !fortune_map[coord];
         // 油田数を差分更新
         for (i, board) in pool.iter().enumerate() {
-            cnt[i] += board.oil_cnt[coord] as i16 * delta;
+            cnt[i] += board.oil_cnt[coord] as usize * delta;
         }
         k += delta;
 
-        let score = calc_mutual_information(k as usize, input, pool, &cnt);
+        let score = calc_mutual_information(k, input, pool, &cnt);
         if score > best_score {
             best_score = score;
         } else {
             // 相互情報量が改善しなければ、元に戻す
-            let delta = if fortune_map[coord] { -1 } else { 1 };
+            let delta = if fortune_map[coord] { !0 } else { 1 };
             fortune_map[coord] = !fortune_map[coord];
             for (i, board) in pool.iter().enumerate() {
-                cnt[i] += board.oil_cnt[coord] as i16 * delta;
+                cnt[i] += board.oil_cnt[coord] as usize * delta;
             }
             k += delta;
         }
@@ -175,7 +175,7 @@ fn climbing(input: &Input, pool: &[Board], rng: &mut rand_pcg::Pcg64Mcg) -> Vec<
     fortune_coords
 }
 
-fn calc_mutual_information(k: usize, input: &Input, pool: &[Board], cnt: &[i16]) -> f64 {
+fn calc_mutual_information(k: usize, input: &Input, pool: &[Board], cnt: &[usize]) -> f64 {
     let mean_max = (k as f64 - input.oil_total as f64) * input.eps
         + (input.oil_total as f64) * (1.0 - input.eps);
     let std_dev = ((k as f64) * input.eps * (1.0 - input.eps)).sqrt();
@@ -192,7 +192,7 @@ fn calc_mutual_information(k: usize, input: &Input, pool: &[Board], cnt: &[i16])
         let upper = ((mean + 3.0 * std_dev) as usize).min(query_result_num);
         for query_result in lower..=upper {
             query_result_p_vec[query_result] +=
-                board.prob * calc_likelihood(k, input.eps, c as usize, query_result);
+                board.prob * calc_likelihood(k, input.eps, c, query_result);
         }
     }
     let mut ret = 0.0;
@@ -205,7 +205,7 @@ fn calc_mutual_information(k: usize, input: &Input, pool: &[Board], cnt: &[i16])
             if board.prob < prune_threshold {
                 continue;
             }
-            let likelihood = calc_likelihood(k, input.eps, c as usize, query_result);
+            let likelihood = calc_likelihood(k, input.eps, c, query_result);
             if likelihood < prune_threshold {
                 continue;
             }
