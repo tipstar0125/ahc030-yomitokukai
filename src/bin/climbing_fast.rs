@@ -21,10 +21,11 @@ fn main() {
     let input = read_input();
     let mut pool = make_board(&input); // 盤面候補の生成
     let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(12345);
+    let precalc = precalc_ret_probs(&input);
 
     loop {
         // 占いマスを追加・削除する山登り
-        let fortune_coords = climbing(&input, &pool, &mut rng);
+        let fortune_coords = climbing(&input, &pool, &mut rng, &precalc);
         let k = fortune_coords.len();
 
         // ベイズ推定
@@ -118,7 +119,12 @@ fn calc_likelihood(k: usize, eps: f64, cnt: usize, ret: usize) -> f64 {
     )
 }
 
-fn climbing(input: &Input, pool: &[Board], rng: &mut rand_pcg::Pcg64Mcg) -> Vec<Coord> {
+fn climbing(
+    input: &Input,
+    pool: &[Board],
+    rng: &mut rand_pcg::Pcg64Mcg,
+    precalc: &PreCalc,
+) -> Vec<Coord> {
     // 初期値は全てのマスを占うとして山登りをスタート
     let mut fortune_map = DynamicMap2d::new(vec![true; input.n2], input.n);
     let mut best_score = 0.0;
@@ -151,7 +157,7 @@ fn climbing(input: &Input, pool: &[Board], rng: &mut rand_pcg::Pcg64Mcg) -> Vec<
         }
         k += delta;
 
-        let score = calc_mutual_information(k, input, pool, &cnt);
+        let score = calc_mutual_information(k, pool, &cnt, precalc);
         if score > best_score {
             best_score = score;
         } else {
@@ -176,57 +182,87 @@ fn climbing(input: &Input, pool: &[Board], rng: &mut rand_pcg::Pcg64Mcg) -> Vec<
     fortune_coords
 }
 
+struct PreCalc {
+    probs: Vec<Vec<Vec<(f64, f64)>>>,
+    probs_lower: Vec<Vec<usize>>,
+}
+
 // 各計算において、確率もしくは尤度が1e-6をした回る場合は枝刈りして計算量を抑える
 const EPS: f64 = 1e-6;
 
+fn precalc_ret_probs(input: &Input) -> PreCalc {
+    let mut probs = mat![vec![]; input.n2 + 1; input.oil_total + 1];
+    let mut probs_lower = mat![0; input.n2 + 1; input.oil_total + 1];
+    // 占いマスの数として想定される数k: 1～N^2
+    for k in 1..=input.n2 {
+        // 占われたマスの油田数の合計としてありうる数cnt: 0～oil_total
+        for cnt in 0..=input.oil_total {
+            // 占い結果の平均値を求めて、それを中心に枝刈りされるまで計算をする
+            let mu = (k as f64 - cnt as f64) * input.eps + cnt as f64 * (1.0 - input.eps);
+            let center = mu.round() as usize;
+            for r in (0..=center).rev() {
+                let prob = calc_likelihood(k, input.eps, cnt, r);
+                if prob < EPS {
+                    // 後の計算で計算不要箇所をスキップするために、下限の枝刈り箇所を保存
+                    probs_lower[k][cnt] = r + 1;
+                    break;
+                }
+                // 後の計算でlog計算した値も用いるので、事前に計算しておく
+                probs[k][cnt].push((prob, prob.ln()));
+            }
+            probs[k][cnt].reverse();
+            for r in center + 1.. {
+                let prob = calc_likelihood(k, input.eps, cnt, r);
+                if prob < EPS {
+                    break;
+                }
+                probs[k][cnt].push((prob, prob.ln()));
+            }
+        }
+    }
+    PreCalc { probs, probs_lower }
+}
+
 // 候補盤面Bが正解である確率がP(B)、クエリの結果がretとなる確率がP(ret)のとき、
 // 相互情報量は Σ P(ret|B)P(B) log(P(ret|B)/P(ret))
-fn calc_mutual_information(k: usize, input: &Input, pool: &[Board], cnt: &[usize]) -> f64 {
+fn calc_mutual_information(k: usize, pool: &[Board], cnt: &[usize], precalc: &PreCalc) -> f64 {
     let mut ret_probs = vec![]; // P(ret)
     for (board, &c) in pool.iter().zip(cnt) {
         if board.prob < EPS {
             continue;
         }
-        // 占い結果の平均値を求めて、それを中心に枝刈りされるまで計算をする
-        let mu = (k as f64 - c as f64) * input.eps + c as f64 * (1.0 - input.eps);
-        let center = mu.round() as usize;
-        for r in (0..=center).rev() {
-            let prob = calc_likelihood(k, input.eps, c, r);
-            if prob < EPS {
-                break;
-            }
-            // 長さが足りない場合は、resize
-            if ret_probs.len() < r + 1 {
-                ret_probs.resize(r + 1, 0.0);
-            }
-            ret_probs[r] += board.prob * prob;
+        let lower = precalc.probs_lower[k][c];
+        let length = lower + precalc.probs[k][c].len();
+        // 枝刈り上限までresize
+        if ret_probs.len() < length {
+            ret_probs.resize(length, 0.0);
         }
-        for r in center + 1.. {
-            let prob = calc_likelihood(k, input.eps, c, r); // P(ret|B)
-            if prob < EPS {
-                break;
-            }
-            if ret_probs.len() < r + 1 {
-                ret_probs.resize(r + 1, 0.0);
-            }
-            ret_probs[r] += board.prob * prob;
+
+        // 枝刈り下限から計算
+        for ((prob, _), ret_prob) in precalc.probs[k][c]
+            .iter()
+            .zip(ret_probs[lower..].iter_mut())
+        {
+            *ret_prob += board.prob * prob;
         }
     }
 
+    // ループの中でlogの計算をしたくないので、事前にlog計算をしておく
+    for ret_prob in ret_probs.iter_mut() {
+        *ret_prob = ret_prob.ln();
+    }
+
     let mut info = 0.0;
-    for (ret, &ret_prob) in ret_probs.iter().enumerate() {
-        if ret_prob < EPS {
+    for (board, &c) in pool.iter().zip(cnt) {
+        if board.prob < EPS {
             continue;
         }
-        for (board, &c) in pool.iter().zip(cnt) {
-            if board.prob < EPS {
-                continue;
-            }
-            let likelihood = calc_likelihood(k, input.eps, c, ret);
-            if likelihood < EPS {
-                continue;
-            }
-            info += likelihood * board.prob * (likelihood / ret_prob).log2();
+        // 枝刈り下限から計算
+        let lower = precalc.probs_lower[k][c];
+        for ((prob, prob_ln), ret_prob_ln) in
+            precalc.probs[k][c].iter().zip(ret_probs[lower..].iter())
+        {
+            info += prob * board.prob * (prob_ln - ret_prob_ln); // log(x/y)=log(x)-log(y)
         }
     }
     info * (k as f64).sqrt()

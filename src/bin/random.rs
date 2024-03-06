@@ -15,6 +15,9 @@ use proconio::input_interactive;
 use rand::prelude::*;
 
 fn main() {
+    let time_keeper = TimeKeeper::new(2.9);
+    let start_time = time_keeper.get_time();
+
     let input = read_input();
     let mut pool = make_board(&input); // 盤面候補の生成
     let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(12345);
@@ -47,17 +50,12 @@ fn main() {
         }
 
         // 最も確率が高い盤面を求める
-        let (mx, idx) = {
-            let mut mx = 0.0;
-            let mut idx = 0;
-            for (i, board) in pool.iter().enumerate() {
-                if board.prob > mx {
-                    mx = board.prob;
-                    idx = i;
-                }
-            }
-            (mx, idx)
-        };
+        let (idx, mx) = pool
+            .iter()
+            .map(|board| board.prob)
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .unwrap();
 
         // 80%以上なら答える
         if mx > 0.8 {
@@ -72,12 +70,15 @@ fn main() {
             }
             let ret = answer(&ans_coords);
             if ret == 1 {
-                return;
+                break;
             }
             // 誤りの場合、その盤面の確率を0にして、占いを繰り返す
             pool[idx].prob = 0.0;
         }
     }
+
+    let elapsed_time = time_keeper.get_time() - start_time;
+    eprintln!("Elapsed time: {elapsed_time}");
 }
 
 // BFSで全ての盤面を生成

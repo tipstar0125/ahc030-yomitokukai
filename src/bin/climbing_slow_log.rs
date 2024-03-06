@@ -37,11 +37,20 @@ fn main() {
             // ある候補盤面Bにおいて、retとなる尤度P(ret|B)を求める
             let likelihood = calc_likelihood(k, input.eps, cnt, ret);
             // P(B|ret)
-            board.prob *= likelihood;
+            board.prob = board.prob.ln() + likelihood.ln();
         }
 
-        // 正規化
-        let prob_sum = pool.iter().map(|board| board.prob).sum::<f64>();
+        // 対数尤度→事後確率→正規化
+        let mx = pool
+            .iter()
+            .max_by(|&a, &b| a.prob.partial_cmp(&b.prob).unwrap())
+            .unwrap()
+            .prob;
+        let mut prob_sum = 0.0;
+        for board in pool.iter_mut() {
+            board.prob = (board.prob - mx).exp();
+            prob_sum += board.prob;
+        }
         for board in pool.iter_mut() {
             board.prob /= prob_sum;
         }
@@ -73,7 +82,7 @@ fn main() {
             pool[idx].prob = 0.0;
         }
     }
-
+    
     let elapsed_time = time_keeper.get_time() - start_time;
     eprintln!("Elapsed time: {elapsed_time}");
 }
