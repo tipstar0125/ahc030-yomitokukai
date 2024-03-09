@@ -17,52 +17,53 @@ use rand::prelude::*;
 fn main() {
     let time_keeper = TimeKeeper::new(2.9);
     let start_time = time_keeper.get_time();
-    let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(12345);
+    let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(0);
 
     let input = read_input();
-    let ITER = 1e3 as usize;
+    let ITER = 1e2 as usize;
     let mut state = State::new(&input, &mut rng, ITER);
     let mutual_info = MutualInfo::new(&input);
 
     for t in 0.. {
+        // 最初は盤面をランダム生成しているのでスキップ
         if t > 0 {
-            // 尤度上位10ケから上下左右に動かす(ポリオミノが2つの場合、これだけでいけちゃう)
+            // 新しく生成される盤面の尤度は、対数尤度を算出するので、既存の盤面も対数尤度に戻しておく
+            state.calc_all_ln_prob();
+
             for _ in 0..ITER {
                 let good_board = state.pool[rng.gen_range(0..5)].clone();
-                let m = rng.gen_range(0..input.m);
-                let coord_diff = ADJ[rng.gen_range(0..4)];
-                let now_coord = good_board.mino_pos_coords[m];
-                let next_coord = now_coord + coord_diff;
-                if next_coord.row > input.n - input.minos[m].height
-                    || next_coord.col > input.n - input.minos[m].width
-                {
-                    continue;
+                let r = rng.gen_range(0..10);
+                let optional_board = {
+                    if r <= 8 {
+                        // 1つのポリオミノを上下左右いずれかに1マス移動する近傍
+                        good_board.move_one_square(&input, &mut rng)
+                    } else {
+                        // 1つのポリオミノをランダムに移動する近傍
+                        good_board.move_random(&input, &mut rng)
+                    }
+                };
+
+                if let Some(mut next_board) = optional_board {
+                    if !state.set.contains(&next_board.oil_cnt) {
+                        state.set.insert(next_board.oil_cnt.clone());
+                        next_board.prob = state.calc_ln_prob(&next_board);
+                        state.pool.push(next_board);
+                    }
                 }
-                let mut next_board = good_board.clone();
-                next_board.mino_pos_coords[m] = next_coord;
-                for &coord_diff in input.minos[m].coords.iter() {
-                    next_board.oil_cnt[now_coord + coord_diff] -= 1;
-                    next_board.oil_cnt[next_coord + coord_diff] += 1;
-                }
-                if state.set.contains(&next_board.oil_cnt) {
-                    continue;
-                }
-                state.set.insert(next_board.oil_cnt.clone());
-                // 本当は、pool内の尤度を対数尤度にした後、next boardの対数尤度を更新する必要がある
-                // 占い山登り時に対数尤度を尤度に戻す
-                state.pool.push(next_board);
             }
+            state.ln_prob_to_prob();
             state.normalize();
         }
-        eprintln!("Board candidate num: {}", state.pool.len());
+
+        eprintln!("Pool num: {}", state.pool.len());
 
         // 占いマスを追加・削除する山登り
         let fortune_coords = mutual_info.climbing(&input, &state.pool);
 
-        // 占い後、ベイズ推定で事後確率計算（計算後は対数尤度）
+        // 占い後、ベイズ推定で対数尤度計算
         state.infer(fortune_coords, &input);
 
-        // 対数尤度→事後確率→正規化
+        // 対数尤度→尤度→正規化
         state.ln_prob_to_prob();
         state.normalize();
 
@@ -315,9 +316,7 @@ impl State {
 
         // 都度、最初のクエリから計算
         // 対数尤度にして、値が小さくなりすぎないようにする
-        for i in 0..self.pool.len() {
-            self.pool[i].prob = self.calc_ln_prob(&self.pool[i]);
-        }
+        self.calc_all_ln_prob();
     }
     fn calc_ln_prob(&self, board: &Board) -> f64 {
         // 初期の確率は全て等しいので、全ての盤面において同じ値(0.0)で初期化
@@ -332,6 +331,11 @@ impl State {
             ln_prob += likelihoods[cnt];
         }
         ln_prob
+    }
+    fn calc_all_ln_prob(&mut self) {
+        for i in 0..self.pool.len() {
+            self.pool[i].prob = self.calc_ln_prob(&self.pool[i]);
+        }
     }
     fn ln_prob_to_prob(&mut self) {
         let mx = self
@@ -382,6 +386,41 @@ struct Board {
     prob: f64,
     oil_cnt: DynamicMap2d<u8>,
     mino_pos_coords: Vec<Coord>,
+}
+
+impl Board {
+    fn move_one_square(&self, input: &Input, rng: &mut rand_pcg::Pcg64Mcg) -> Option<Board> {
+        let m = rng.gen_range(0..input.m);
+        let coord_diff = ADJ[rng.gen_range(0..4)];
+        let now_coord = self.mino_pos_coords[m];
+        let next_coord = now_coord + coord_diff;
+        if next_coord.row > input.n - input.minos[m].height
+            || next_coord.col > input.n - input.minos[m].width
+        {
+            return None;
+        }
+        let mut next_board = self.clone();
+        next_board.mino_pos_coords[m] = next_coord;
+        for &coord_diff in input.minos[m].coords.iter() {
+            next_board.oil_cnt[now_coord + coord_diff] -= 1;
+            next_board.oil_cnt[next_coord + coord_diff] += 1;
+        }
+        Some(next_board)
+    }
+    fn move_random(&self, input: &Input, rng: &mut rand_pcg::Pcg64Mcg) -> Option<Board> {
+        let m = rng.gen_range(0..input.m);
+        let i = rng.gen_range(0..input.n - input.minos[m].height + 1);
+        let j = rng.gen_range(0..input.n - input.minos[m].width + 1);
+        let now_coord = self.mino_pos_coords[m];
+        let next_coord = Coord::new(i, j);
+        let mut next_board = self.clone();
+        next_board.mino_pos_coords[m] = next_coord;
+        for &coord_diff in input.minos[m].coords.iter() {
+            next_board.oil_cnt[now_coord + coord_diff] -= 1;
+            next_board.oil_cnt[next_coord + coord_diff] += 1;
+        }
+        Some(next_board)
+    }
 }
 
 struct Mino {
