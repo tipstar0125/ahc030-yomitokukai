@@ -8,11 +8,10 @@
 #![allow(clippy::needless_range_loop)]
 #![allow(dead_code)]
 
-use std::collections::{HashSet, VecDeque};
-
 use itertools::Itertools;
 use proconio::input_interactive;
 use rand::prelude::*;
+use rustc_hash::FxHashSet;
 
 fn main() {
     let time_keeper = TimeKeeper::new(2.9);
@@ -268,7 +267,7 @@ impl MutualInfo {
 
 struct State {
     pool: Vec<Board>,
-    set: HashSet<DynamicMap2d<u8>>,
+    set: FxHashSet<DynamicMap2d<u8>>,
     likelihoods_memo: Vec<Vec<f64>>,
     fortune_coords_memo: Vec<Vec<Coord>>,
 }
@@ -277,7 +276,7 @@ impl State {
     // ランダムで盤面生成
     fn new(input: &Input, rng: &mut rand_pcg::Pcg64Mcg, iter: usize) -> Self {
         let mut pool = vec![];
-        let mut set = HashSet::new();
+        let mut set = FxHashSet::default();
         for _ in 0..iter {
             let mut mino_pos_coords = vec![];
             let mut oil_cnt = DynamicMap2d::new(vec![0; input.n2], input.n);
