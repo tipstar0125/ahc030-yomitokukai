@@ -37,12 +37,15 @@ fn main() {
                 let good_board = state.pool[rng.gen_range(0..5)].clone();
                 let r = rng.gen_range(0..10);
                 let optional_board = {
-                    if r <= 8 {
+                    if r < 3 {
                         // 1つのポリオミノを上下左右いずれかに1マス移動する近傍
                         good_board.move_one_square(&input, &mut rng)
-                    } else {
+                    } else if r < 4 {
                         // 1つのポリオミノをランダムに移動する近傍
                         good_board.move_random(&input, &mut rng)
+                    } else {
+                        // 2つのポリオミノをランダムにスワップする近傍
+                        good_board.swap_random(&input, &mut rng)
                     }
                 };
 
@@ -144,9 +147,6 @@ impl MutualInfo {
         // 相互情報量は Σ P(ret|B)P(B) log(P(ret|B)/P(ret))
         let mut ret_probs = vec![]; // P(ret)
         for (board, &c) in pool.iter().zip(cnt) {
-            if board.prob < EPS {
-                continue;
-            }
             let lower = self.probs_lower[k][c];
             let length = lower + self.probs[k][c].len();
             // 枝刈り上限までresize
@@ -168,9 +168,6 @@ impl MutualInfo {
 
         let mut info = 0.0;
         for (board, &c) in pool.iter().zip(cnt) {
-            if board.prob < EPS {
-                continue;
-            }
             // 枝刈り下限から計算
             let lower = self.probs_lower[k][c];
             for ((prob, prob_ln), ret_prob_ln) in
@@ -397,8 +394,6 @@ impl State {
             if ret == 1 {
                 return true;
             }
-            // 誤りの場合、削除
-            self.pool.remove(0);
         }
         false
     }
@@ -442,6 +437,37 @@ impl Board {
         for &coord_diff in input.minos[m].coords.iter() {
             next_board.oil_cnt[now_coord + coord_diff] -= 1;
             next_board.oil_cnt[next_coord + coord_diff] += 1;
+        }
+        Some(next_board)
+    }
+    fn swap_random(&self, input: &Input, rng: &mut rand_pcg::Pcg64Mcg) -> Option<Board> {
+        let p = rng.gen_range(0..input.m);
+        let q = rng.gen_range(0..input.m);
+        if p == q {
+            return None;
+        }
+        let p_coord = self.mino_pos_coords[p];
+        let q_coord = self.mino_pos_coords[q];
+        if p_coord.row > input.n - input.minos[q].height
+            || p_coord.col > input.n - input.minos[q].width
+        {
+            return None;
+        }
+        if q_coord.row > input.n - input.minos[p].height
+            || q_coord.col > input.n - input.minos[p].width
+        {
+            return None;
+        }
+        let mut next_board = self.clone();
+        next_board.mino_pos_coords[p] = q_coord;
+        next_board.mino_pos_coords[q] = p_coord;
+        for &coord_diff in input.minos[p].coords.iter() {
+            next_board.oil_cnt[p_coord + coord_diff] -= 1;
+            next_board.oil_cnt[q_coord + coord_diff] += 1;
+        }
+        for &coord_diff in input.minos[q].coords.iter() {
+            next_board.oil_cnt[q_coord + coord_diff] -= 1;
+            next_board.oil_cnt[p_coord + coord_diff] += 1;
         }
         Some(next_board)
     }
