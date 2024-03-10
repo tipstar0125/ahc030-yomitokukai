@@ -20,11 +20,14 @@ fn main() {
     let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(0);
 
     let input = read_input();
-    let ITER = 1e2 as usize;
+    let ITER = 1e5 as usize;
     let mut state = State::new(&input, &mut rng, ITER);
     let mutual_info = MutualInfo::new(&input);
 
-    for t in 0.. {
+    for t in 0..2 * input.n2 {
+        if time_keeper.isTimeOver() {
+            break;
+        }
         // 最初は盤面をランダム生成しているのでスキップ
         if t > 0 {
             // 新しく生成される盤面の尤度は、対数尤度を算出するので、既存の盤面も対数尤度に戻しておく
@@ -46,6 +49,7 @@ fn main() {
                 if let Some(mut next_board) = optional_board {
                     if !state.set.contains(&next_board.oil_cnt) {
                         state.set.insert(next_board.oil_cnt.clone());
+                        next_board.query_cnt = state.calc_query_cnt(&next_board);
                         next_board.prob = state.calc_ln_prob(&next_board);
                         state.pool.push(next_board);
                     }
@@ -53,12 +57,14 @@ fn main() {
             }
             state.ln_prob_to_prob();
             state.normalize();
+            state.sort_by_prob();
         }
 
         eprintln!("Pool num: {}", state.pool.len());
 
         // 占いマスを追加・削除する山登り
-        let fortune_coords = mutual_info.climbing(&input, &state.pool);
+        let fortune_coords =
+            mutual_info.climbing(&input, &state.pool[..1000.min(state.pool.len())]);
 
         // 占い後、ベイズ推定で対数尤度計算
         state.infer(fortune_coords, &input);
@@ -70,11 +76,11 @@ fn main() {
         // 確率が低い盤面は最後にtruncateするので、ソートしておく
         state.sort_by_prob();
 
-        // 最も確率の高い盤面が80%以上なら答える
+        // 最も確率の高い盤面が一定以上なら答える
         if state.answer(0.8, &input) {
             break;
         }
-        state.pool.truncate(10000); // 確率上位10000ケ(適当)のみ残す
+        state.pool.truncate(ITER); // 確率上位のみ残す
     }
 
     let elapsed_time = time_keeper.get_time() - start_time;
@@ -288,6 +294,7 @@ impl State {
                 prob: 0.0,
                 oil_cnt,
                 mino_pos_coords,
+                query_cnt: vec![],
             })
         }
         let L = pool.len() as f64;
@@ -305,11 +312,22 @@ impl State {
         let k = fortune_coords.len();
         let ret = query(&fortune_coords);
         let mut likelihoods = vec![];
+
         // 再計算用にクエリで想定される油田数全ての計算をしておく
         for cnt in 0..=input.oil_total {
             let likelihood = calc_likelihood(k, input.eps, cnt, ret);
             likelihoods.push(likelihood.ln());
         }
+
+        // query_cntは尤度再計算で毎回使用するので、メモをしておく
+        for board in self.pool.iter_mut() {
+            let mut cnt = 0;
+            for &coord in fortune_coords.iter() {
+                cnt += board.oil_cnt[coord] as usize;
+            }
+            board.query_cnt.push(cnt);
+        }
+
         // 再計算メモ
         self.likelihoods_memo.push(likelihoods);
         self.fortune_coords_memo.push(fortune_coords);
@@ -321,16 +339,21 @@ impl State {
     fn calc_ln_prob(&self, board: &Board) -> f64 {
         // 初期の確率は全て等しいので、全ての盤面において同じ値(0.0)で初期化
         let mut ln_prob = 0.0;
-        for (likelihoods, fortune_coords) in
-            self.likelihoods_memo.iter().zip(&self.fortune_coords_memo)
-        {
+        for (likelihoods, cnt) in self.likelihoods_memo.iter().zip(&board.query_cnt) {
+            ln_prob += likelihoods[*cnt];
+        }
+        ln_prob
+    }
+    fn calc_query_cnt(&self, board: &Board) -> Vec<usize> {
+        let mut query_cnt = vec![];
+        for fortune_coords in self.fortune_coords_memo.iter() {
             let mut cnt = 0;
             for &coord in fortune_coords.iter() {
                 cnt += board.oil_cnt[coord] as usize;
             }
-            ln_prob += likelihoods[cnt];
+            query_cnt.push(cnt);
         }
-        ln_prob
+        query_cnt
     }
     fn calc_all_ln_prob(&mut self) {
         for i in 0..self.pool.len() {
@@ -386,6 +409,7 @@ struct Board {
     prob: f64,
     oil_cnt: DynamicMap2d<u8>,
     mino_pos_coords: Vec<Coord>,
+    query_cnt: Vec<usize>,
 }
 
 impl Board {

@@ -1,0 +1,89 @@
+[tool.poetry]
+name = "python_template"
+version = "0.1.0"
+description = "Template for python project"
+authors = ["Yoke"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = ">=3.8,<3.11"
+pydantic = "^1.9.1"
+python-dotenv = "^0.20.0"
+[tool.poetry.dev-dependencies]
+flake8 = "^4.0.1"
+isort = "^5.10.1"
+black = "^22.3.0"
+mypy = "^0.950"
+taskipy = "^1.10.2"
+flake8-isort = "^4.1.1"
+flake8-bugbear = "^22.4.25"
+flake8-builtins = "^1.5.3"
+flake8-eradicate = "^1.2.1"
+flake8-unused-arguments = "^0.0.10"
+flake8-pytest-style = "^1.6.0"
+pep8-naming = "^0.12.1"
+pyproject-flake8 = "^0.0.1-alpha.4"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.taskipy.tasks]
+dev = "python src/main.py"
+fmt-lint = "task fmt && task lint"
+fmt-lint-strictest = "task fmt && task lint-strictest"
+fmt = "task fmt-black && task fmt-isort"
+fmt-black = "black src tests"
+fmt-isort = "isort src tests"
+lint = "task lint-black && task lint-flake8 && task lint-mypy"
+lint-strictest = "task lint-black && task lint-flake8 && task lint-mypy-strictest"
+lint-flake8 = "pflake8 src tests"
+lint-mypy = "task lint-mypy-src && task lint-mypy-tests"
+lint-mypy-src = "mypy src --disallow-untyped-defs"
+lint-mypy-tests= "mypy tests"
+lint-mypy-report = "mypy --strict src --html-report mypyreport --any-exprs-report mypyreport"
+lint-mypy-strictest = "mypy --strict src tests --disallow-any-expr"
+lint-mypy-strictest-report = "mypy --strict src --disallow-any-expr --html-report mypyreport --any-exprs-report mypyreport"
+lint-black = "black --check src tests"
+docs = "task clean-docs && sphinx-apidoc -F -o docs/source src && sphinx-build docs/source docs/build"
+clean-docs = "rm -rf docs/build && cd docs/source && rm -rf *.rst make.bat Makefile _build _static _templates && cd ../.."
+build = "pyinstaller src/main.py --onefile"
+test = "pytest -s -vv --cov=. --cov-branch --cov-report=html"
+
+[tool.flake8]
+max-line-length = 160
+extend-ignore = "E203, W503"
+
+[tool.black]
+line-length = 160
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[project]
+name = "python-template"
+version = "0.1.0"
+description = "Template for python project"
+readme = "README.md"
+
+[[project.authors]]
+name = "Yoke"
+
+[tool.sphinx-pyproject]
+project = "python-template"
+copyright = "2022, Yoke"
+language = "en"
+package_root = "python-template"
+html_theme = "sphinx_rtd_theme"
+todo_include_todos = true
+templates_path = ["_templates"]
+html_static_path = ["_static"]
+extensions = [
+  "sphinx.ext.autodoc",
+  "sphinx.ext.viewcode",
+  "sphinx.ext.todo",
+  "sphinx.ext.napoleon",
+]
