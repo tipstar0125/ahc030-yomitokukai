@@ -25,13 +25,21 @@ fn main() {
     let mutual_info = MutualInfo::new(&input);
 
     for t in 0..2 * input.n2 {
-        if time_keeper.isTimeOver() {
-            break;
-        }
+        // if time_keeper.isTimeOver() {
+        //     break;
+        // }
+
         // 最初は盤面をランダム生成しているのでスキップ
         if t > 0 {
             // 新しく生成される盤面の尤度は、対数尤度を算出するので、既存の盤面も対数尤度に戻しておく
             state.calc_all_ln_prob();
+
+            // 配置候補の集合をクリアして、再度pool内の配置候補を入れなおす
+            // 削除された配置候補の中に正解があった場合に復活できるようにする処置
+            state.set.clear();
+            for board in state.pool.iter() {
+                state.set.insert(board.oil_cnt.clone());
+            }
 
             for _ in 0..ITER {
                 let good_board = state.pool[rng.gen_range(0..5)].clone();
