@@ -11,10 +11,11 @@
 use itertools::Itertools;
 use proconio::input_interactive;
 use rand::prelude::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 fn main() {
-    let time_keeper = TimeKeeper::new(2.9);
+    let time_limit = 3.0;
+    let time_keeper = TimeKeeper::new(time_limit - 0.05);
     let start_time = time_keeper.get_time();
     let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(0);
 
@@ -24,46 +25,56 @@ fn main() {
     let mutual_info = MutualInfo::new(&input);
 
     for t in 0..2 * input.n2 {
-        // if time_keeper.isTimeOver() {
-        //     break;
-        // }
+        if time_keeper.isTimeOver() {
+            break;
+        }
 
         // 最初は盤面をランダム生成しているのでスキップ
         if t > 0 {
-            // 新しく生成される盤面の尤度は、対数尤度を算出するので、既存の盤面も対数尤度に戻しておく
-            state.calc_all_ln_prob();
-
+            // ターンの最後で尤度は対数尤度になっている
             // 配置候補の集合をクリアして、再度pool内の配置候補を入れなおす
             // 削除された配置候補の中に正解があった場合に復活できるようにする処置
             state.set.clear();
             for board in state.pool.iter() {
-                state.set.insert(board.oil_cnt.clone());
+                state.set.insert(board.hash, board.prob);
             }
 
+            let mut mx_prob = state.pool[0].prob;
+            let mut now_prob = mx_prob;
+            let mut now_board = state.pool[0].clone();
+
+            // 時間経過で回数を減らす
+            let ITER = ((ITER as f64) * (time_limit - time_keeper.get_time()).min(1.0)) as usize;
             for _ in 0..ITER {
-                let good_board = state.pool[rng.gen_range(0..5)].clone();
-                let r = rng.gen_range(0..10);
+                let coin = rng.gen_range(0..10);
                 let optional_board = {
-                    if r < 3 {
+                    if coin < 3 {
                         // 1つのポリオミノを上下左右いずれかに1マス移動する近傍
-                        good_board.move_one_square(&input, &mut rng)
-                    } else if r < 4 {
+                        now_board.move_one_square(&input, &mut rng, &state)
+                    } else if coin < 4 {
                         // 1つのポリオミノをランダムに移動する近傍
-                        good_board.move_random(&input, &mut rng)
+                        now_board.move_random(&input, &mut rng, &state)
                     } else {
                         // 2つのポリオミノをランダムにスワップする近傍
-                        good_board.swap_random(&input, &mut rng)
+                        now_board.swap_random(&input, &mut rng, &state)
                     }
                 };
 
-                if let Some(mut next_board) = optional_board {
-                    if !state.set.contains(&next_board.oil_cnt) {
-                        state.set.insert(next_board.oil_cnt.clone());
-                        next_board.query_cnt = state.calc_query_cnt(&next_board);
-                        next_board.prob = state.calc_ln_prob(&next_board);
-                        state.pool.push(next_board);
+                if let Some(next_board) = optional_board {
+                    if !state.set.contains_key(&next_board.hash)
+                        && next_board.prob - mx_prob >= -10.0
+                    {
+                        state.set.insert(next_board.hash, next_board.prob);
+                        state.pool.push(next_board.clone());
+                    }
+                    if now_prob <= next_board.prob
+                        || rng.gen_bool((next_board.prob - now_prob).exp())
+                    {
+                        now_prob = next_board.prob;
+                        now_board = next_board;
                     }
                 }
+                mx_prob.setmax(now_prob);
             }
             state.ln_prob_to_prob();
             state.normalize();
@@ -72,16 +83,17 @@ fn main() {
 
         eprintln!("Pool num: {}", state.pool.len());
 
+        // 配置候補全てを使って相互情報量の山登りを行うと遅いので、上位に絞って近似計算する
+        // 時間経過で絞る数を減らしていく
+        let size = state
+            .pool
+            .len()
+            .min((1e3 * (time_limit - time_keeper.get_time()).min(1.0)) as usize);
         // 占いマスを追加・削除する山登り
-        let fortune_coords =
-            mutual_info.climbing(&input, &state.pool[..1000.min(state.pool.len())]);
+        let fortune_coords = mutual_info.climbing(&input, &state.pool[..size]);
 
         // 占い後、ベイズ推定で対数尤度計算
         state.infer(fortune_coords, &input);
-
-        // 対数尤度→尤度→正規化
-        state.ln_prob_to_prob();
-        state.normalize();
 
         // 確率が低い盤面は最後にtruncateするので、ソートしておく
         state.sort_by_prob();
@@ -90,7 +102,12 @@ fn main() {
         if state.answer(0.8, &input) {
             break;
         }
-        state.pool.truncate(ITER); // 確率上位のみ残す
+
+        // 確率上位のみ残す
+        // 時間経過で絞る数を減らしていく
+        state
+            .pool
+            .truncate((1e3 * (time_limit - time_keeper.get_time()).min(1.0)) as usize);
     }
 
     let elapsed_time = time_keeper.get_time() - start_time;
@@ -154,6 +171,9 @@ impl MutualInfo {
         // 相互情報量は Σ P(ret|B)P(B) log(P(ret|B)/P(ret))
         let mut ret_probs = vec![]; // P(ret)
         for (board, &c) in pool.iter().zip(cnt) {
+            if board.prob < EPS {
+                continue;
+            }
             let lower = self.probs_lower[k][c];
             let length = lower + self.probs[k][c].len();
             // 枝刈り上限までresize
@@ -175,6 +195,9 @@ impl MutualInfo {
 
         let mut info = 0.0;
         for (board, &c) in pool.iter().zip(cnt) {
+            if board.prob < EPS {
+                continue;
+            }
             // 枝刈り下限から計算
             let lower = self.probs_lower[k][c];
             for ((prob, prob_ln), ret_prob_ln) in
@@ -267,36 +290,56 @@ impl MutualInfo {
 
 struct State {
     pool: Vec<Board>,
-    set: FxHashSet<DynamicMap2d<u8>>,
+    hashes: Vec<DynamicMap2d<u64>>,
+    set: FxHashMap<u64, f64>,
     likelihoods_memo: Vec<Vec<f64>>,
     fortune_coords_memo: Vec<Vec<Coord>>,
+    query_cnt_diff_memo: Vec<Vec<DynamicMap2d<usize>>>,
 }
 
 impl State {
     // ランダムで盤面生成
     fn new(input: &Input, rng: &mut rand_pcg::Pcg64Mcg, iter: usize) -> Self {
+        let mut hashes: Vec<DynamicMap2d<u64>> = vec![];
+        for m in 0..input.m {
+            if m > 0 && input.minos[m] == input.minos[m - 1] {
+                hashes.push(hashes[m - 1].clone());
+            }
+            let mut mp = DynamicMap2d::new(vec![0; input.n2], input.n);
+            for i in 0..input.n - input.minos[m].height + 1 {
+                for j in 0..input.n - input.minos[m].width + 1 {
+                    let coord = Coord::new(i, j);
+                    mp[coord] = rng.gen::<u64>();
+                }
+            }
+            hashes.push(mp);
+        }
+
         let mut pool = vec![];
-        let mut set = FxHashSet::default();
+        let mut set = FxHashMap::default();
         for _ in 0..iter {
             let mut mino_pos_coords = vec![];
             let mut oil_cnt = DynamicMap2d::new(vec![0; input.n2], input.n);
+            let mut hash = 0;
             for m in 0..input.m {
                 let i = rng.gen_range(0..input.n - input.minos[m].height + 1);
                 let j = rng.gen_range(0..input.n - input.minos[m].width + 1);
                 let coord = Coord::new(i, j);
+                hash ^= hashes[m][coord];
                 mino_pos_coords.push(coord);
                 for &coord_diff in input.minos[m].coords.iter() {
                     oil_cnt[coord + coord_diff] += 1;
                 }
             }
             // 同じ盤面は追加しない
-            if set.contains(&oil_cnt) {
+            if set.contains_key(&hash) {
                 continue;
             }
-            set.insert(oil_cnt.clone());
+            set.insert(hash, 0.0);
             pool.push(Board {
                 prob: 0.0,
                 oil_cnt,
+                hash,
                 mino_pos_coords,
                 query_cnt: vec![],
             })
@@ -307,9 +350,11 @@ impl State {
         }
         State {
             pool,
+            hashes,
             set,
             likelihoods_memo: vec![],
             fortune_coords_memo: vec![],
+            query_cnt_diff_memo: vec![],
         }
     }
     fn infer(&mut self, fortune_coords: Vec<Coord>, input: &Input) {
@@ -331,6 +376,27 @@ impl State {
             }
             board.query_cnt.push(cnt);
         }
+
+        // boardを近傍に変更する際に、query_cntを差分更新するようの情報をメモしておく
+        let fortune_coords_set: FxHashSet<Coord> = fortune_coords.clone().into_iter().collect();
+        let mut query_cnt_diff = vec![];
+        for m in 0..input.m {
+            let mut mp = DynamicMap2d::new(vec![1000; input.n2], input.n);
+            for i in 0..input.n - input.minos[m].height + 1 {
+                for j in 0..input.n - input.minos[m].width + 1 {
+                    let mut cnt = 0;
+                    let coord = Coord::new(i, j);
+                    for &coord_diff in &input.minos[m].coords {
+                        if fortune_coords_set.contains(&(coord + coord_diff)) {
+                            cnt += 1;
+                        }
+                    }
+                    mp[coord] = cnt;
+                }
+            }
+            query_cnt_diff.push(mp);
+        }
+        self.query_cnt_diff_memo.push(query_cnt_diff);
 
         // 再計算メモ
         self.likelihoods_memo.push(likelihoods);
@@ -359,6 +425,9 @@ impl State {
         }
         query_cnt
     }
+    fn calc_query_cnt_diff(&self, q: usize, m: usize, before: Coord, after: Coord) -> usize {
+        self.query_cnt_diff_memo[q][m][after] - self.query_cnt_diff_memo[q][m][before]
+    }
     fn calc_all_ln_prob(&mut self) {
         for i in 0..self.pool.len() {
             self.pool[i].prob = self.calc_ln_prob(&self.pool[i]);
@@ -386,7 +455,14 @@ impl State {
             .sort_by(|a, b| b.prob.partial_cmp(&a.prob).unwrap());
     }
     fn answer(&mut self, prob_threshold: f64, input: &Input) -> bool {
+        // 対数尤度のままなので、事後確率にして正規化
         let mx = self.pool[0].prob;
+        let prob_sum = self
+            .pool
+            .iter()
+            .map(|board| (board.prob - mx).exp())
+            .sum::<f64>();
+        let mx = 1.0 / prob_sum;
         if mx > prob_threshold {
             let mut ans_coords = vec![];
             for i in 0..input.n {
@@ -410,12 +486,18 @@ impl State {
 struct Board {
     prob: f64,
     oil_cnt: DynamicMap2d<u8>,
+    hash: u64,
     mino_pos_coords: Vec<Coord>,
     query_cnt: Vec<usize>,
 }
 
 impl Board {
-    fn move_one_square(&self, input: &Input, rng: &mut rand_pcg::Pcg64Mcg) -> Option<Board> {
+    fn move_one_square(
+        &self,
+        input: &Input,
+        rng: &mut rand_pcg::Pcg64Mcg,
+        state: &State,
+    ) -> Option<Board> {
         let m = rng.gen_range(0..input.m);
         let coord_diff = ADJ[rng.gen_range(0..4)];
         let now_coord = self.mino_pos_coords[m];
@@ -431,9 +513,19 @@ impl Board {
             next_board.oil_cnt[now_coord + coord_diff] -= 1;
             next_board.oil_cnt[next_coord + coord_diff] += 1;
         }
+        next_board.hash ^= state.hashes[m][now_coord] ^ state.hashes[m][next_coord];
+        for (q, query_cnt) in next_board.query_cnt.iter_mut().enumerate() {
+            *query_cnt += state.calc_query_cnt_diff(q, m, now_coord, next_coord);
+        }
+        next_board.prob = state.calc_ln_prob(&next_board);
         Some(next_board)
     }
-    fn move_random(&self, input: &Input, rng: &mut rand_pcg::Pcg64Mcg) -> Option<Board> {
+    fn move_random(
+        &self,
+        input: &Input,
+        rng: &mut rand_pcg::Pcg64Mcg,
+        state: &State,
+    ) -> Option<Board> {
         let m = rng.gen_range(0..input.m);
         let i = rng.gen_range(0..input.n - input.minos[m].height + 1);
         let j = rng.gen_range(0..input.n - input.minos[m].width + 1);
@@ -445,9 +537,19 @@ impl Board {
             next_board.oil_cnt[now_coord + coord_diff] -= 1;
             next_board.oil_cnt[next_coord + coord_diff] += 1;
         }
+        next_board.hash ^= state.hashes[m][now_coord] ^ state.hashes[m][next_coord];
+        for (q, query_cnt) in next_board.query_cnt.iter_mut().enumerate() {
+            *query_cnt += state.calc_query_cnt_diff(q, m, now_coord, next_coord);
+        }
+        next_board.prob = state.calc_ln_prob(&next_board);
         Some(next_board)
     }
-    fn swap_random(&self, input: &Input, rng: &mut rand_pcg::Pcg64Mcg) -> Option<Board> {
+    fn swap_random(
+        &self,
+        input: &Input,
+        rng: &mut rand_pcg::Pcg64Mcg,
+        state: &State,
+    ) -> Option<Board> {
         let p = rng.gen_range(0..input.m);
         let q = rng.gen_range(0..input.m);
         if p == q {
@@ -476,10 +578,18 @@ impl Board {
             next_board.oil_cnt[q_coord + coord_diff] -= 1;
             next_board.oil_cnt[p_coord + coord_diff] += 1;
         }
+        next_board.hash ^= state.hashes[p][p_coord] ^ state.hashes[p][q_coord];
+        next_board.hash ^= state.hashes[q][q_coord] ^ state.hashes[q][p_coord];
+        for (i, query_cnt) in next_board.query_cnt.iter_mut().enumerate() {
+            *query_cnt += state.calc_query_cnt_diff(i, p, p_coord, q_coord);
+            *query_cnt += state.calc_query_cnt_diff(i, q, q_coord, p_coord);
+        }
+        next_board.prob = state.calc_ln_prob(&next_board);
         Some(next_board)
     }
 }
 
+#[derive(PartialEq)]
 struct Mino {
     coords: Vec<CoordDiff>,
     height: usize,
@@ -500,8 +610,11 @@ fn read_input() -> Input {
         n: usize,
         m: usize,
         eps: f64,
-        mino_coords2: [[(usize, usize)]; m]
+        mut mino_coords2: [[(usize, usize)]; m]
     }
+    // ハッシュ計算時、同じポリオミノを同一視するために事前にソート
+    mino_coords2.sort();
+
     let mut minos = vec![];
     let mut oil_total = 0;
     for i in 0..m {
@@ -657,7 +770,7 @@ impl std::ops::Add<CoordDiff> for Coord {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CoordDiff {
     dr: isize,
     dc: isize,
